@@ -1,0 +1,256 @@
+#!/bin/bash
+
+# bd_mkdeb
+# Takes care of building the debian installer package.
+# It expects the package name as parameter 1 and the original package tarball
+# name as parameter 2.
+
+# The exit code indicates success or failure of operation.
+
+# The following environment variables have to be set:
+# BH_DEBPKGDIR
+# BH_FINPATH
+# BH_GITPATH
+# BH_TEMPPATH
+# BH_VERSION
+
+# ================================= Copyright =================================
+# Version 0.1 (2020-01-30), Copyright (C) 2019-2020
+# Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
+# Coauthors: -
+
+#   This file is part of the LRZ builder package (for the build server)
+
+#   This program is free software: you can redistribute it and/or modify it 
+#   under the terms of the GNU General Public License as published by the 
+#   Free Software Foundation, either version 3 of the License, or any later 
+#   version.
+#   This Program is distributed in the hope that it will be useful, but 
+#   WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY 
+#   or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License 
+#   for more details.
+
+#   You should have received a copy of the GNU General Public License
+#   along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+#   On Debian systems, the full text of the GNU General Public License
+#   version 3 can be found in the file 
+#     `/usr/share/common-licenses/GPL-3'
+
+
+# ================================= Variables =================================
+
+# Temporary directory
+BD_TEMPDIR="bd_mkdeb"
+
+# Log file
+LMBA_LOG="/var/log/bd_helper/bd_mkdeb.log"
+
+
+# ================================= Functions =================================
+
+
+
+# =============================== Prerequisites ===============================
+
+# Get parameters
+BD_PACKAGE="$1"
+BD_ORIGINAL="$2"
+BD_DEBUILDLOG="/var/log/bd_helper/$BD_PACKAGE.debuildlog"
+
+# Source libbash-mw-basic
+if [ -f /usr/local/lib/libbash-mw/libbash-mw-basic ]
+  then
+    . /usr/local/lib/libbash-mw/libbash-mw-basic
+    lmba_logger "Start of bd_mkdeb"
+  else
+    echo "Library libbash-mw-basic missing!"
+    exit 2
+fi
+
+# Find out binary version of the provided package
+BD_BINVERSION="$BH_VERSION"
+
+# Set absolute paths to work with
+BD_GITPATH=$(realpath $BH_GITPATH/$BD_PACKAGE/$BH_DEBPKGDIR)
+BD_FINPATH=$(realpath $BH_FINPATH/$BD_PACKAGE)
+
+# Check mandatory files for Debian building
+if ! lmba_checkexist "f" "$BD_GITPATH/changelog" "0"
+  then
+    lmba_logger "Debian changelog file for '$BD_PACKAGE' does not exist, ignoring package..."
+    exit 1
+fi
+if ! lmba_checkexist "f" "$BD_GITPATH/compat" "0"
+  then
+    lmba_logger "Debian compat file for '$BD_PACKAGE' does not exist, ignoring package..."
+    exit 1
+fi
+if ! lmba_checkexist "f" "$BD_GITPATH/control" "0"
+  then
+    lmba_logger "Debian control file for '$BD_PACKAGE' does not exist, ignoring package..."
+    exit 1
+fi
+if ! lmba_checkexist "f" "$BD_GITPATH/copyright" "0"
+  then
+    lmba_logger "Debian copyright file for '$BD_PACKAGE' does not exist, ignoring package..."
+    exit 1
+fi
+if ! lmba_checkexist "f" "$BD_GITPATH/rules" "0"
+  then
+    lmba_logger "Debian rules file for '$BD_PACKAGE' does not exist, ignoring package..."
+    exit 1
+fi
+if ! lmba_checkexist "f" "$BD_GITPATH/source/format" "0"
+  then
+    lmba_logger "Debian source format file for '$BD_PACKAGE' does not exist, ignoring package..."
+    exit 1
+fi
+
+# Create temp dir
+if mkdir -p "$BH_TEMPPATH/$BD_TEMPDIR" > /dev/null 2>&1
+  then
+    BD_TEMPPATH=$(realpath $BH_TEMPPATH/$BD_TEMPDIR)
+    # Clearing out existing files (from previously unsuccessful attempts)
+    if ! rm -rf $BD_TEMPPATH/* 2>/dev/null
+      then
+        lmba_logger "Temp directory can't be sweeped, ignoring package..."
+        exit 1
+    fi
+  else
+    lmba_logger "Temp directory can't be created, ignoring package..."
+    exit 1
+fi
+
+
+# =================================== Main ====================================
+
+# Copy original package to temp dir
+if ! cp "$BD_FINPATH/$BD_ORIGINAL" "$BD_TEMPPATH/" > /dev/null 2>&1
+  then
+    lmba_logger "Original package $BD_ORIGINAL could not be used, ignoring package..."
+    rm -rf "$BD_TEMPPATH"
+    exit 1
+fi
+
+# Jump to temp dir and unpack original package
+cd $BD_TEMPPATH
+if ! tar -xzf "$BD_ORIGINAL" > /dev/null 2>&1
+  then
+    lmba_logger "Original package $BD_ORIGINAL could not be unpacked, ignoring package..."
+    rm -rf "$BD_TEMPPATH"
+    exit 1
+fi
+
+# Identify package directory
+BD_PACKDIR=$(ls -1 | grep -v "tar.gz")
+# Check if there's really just one directory
+if [ $(echo "$BD_PACKDIR" | wc -l) != "1" ]
+  then
+    lmba_logger "Something went wrong with the temp directory of $BD_PACKAGE - exit!"
+    rm -rf "$BD_TEMPPATH"
+    exit 1
+# Check if it's really a directory we have unpacked here
+elif [ ! -d "$BD_PACKDIR" ]
+  then
+    lmba_logger "The identified package directory is none - exit!"
+    rm -rf "$BD_TEMPPATH"
+    exit 1
+fi
+
+# Create the debian directory
+if ! mkdir -p "$BD_PACKDIR/debian"
+  then
+    lmba_logger "Could not create the debian subdirectory for $BD_PACKAGE - exit!"
+    rm -rf "$BD_TEMPPATH"
+    exit 1
+fi
+# Copy Debian config directory to the unpacked package
+if ! cp -r $BD_GITPATH/* "$BD_PACKDIR/debian/" > /dev/null 2>&1
+  then
+    lmba_logger "The Debian config directory could not be copied - exit!"
+    rm -rf "$BD_TEMPPATH"
+    exit 1
+fi
+
+# Get the exact version for which the changelog file was build
+# This includes the Debian version
+BD_FINVERSION=$(head -n 1 $BD_PACKDIR/debian/changelog | grep -oE "\([-0-9\.]+\)" | grep -oE "[-0-9\.]+")
+# Get Debian version number from the previously extracted configured
+# version in the changelog file
+BD_DEBNUMBER=$(echo $BD_FINVERSION | cut -d "-" -f 2 -s)
+# Check for correctness
+if ! echo "$BD_DEBNUMBER" | grep -E "^[0-9]+$" > /dev/null 2>&1
+  then
+    lmba_logger "The Debian version number couldn't be guessed correctly - exit!"
+    rm -rf "$BD_TEMPPATH"
+    exit 1
+fi
+
+# Find out if the changelog file was build for this binary version
+if [ "$(echo $BD_FINVERSION | cut -d "-" -f 1 -s)" = "$BD_BINVERSION" ]
+  then
+    lmba_logger "Binary version $BD_BINVERSION has been configured in the build files."
+    # Check if there is already a package build with the resulting name
+    if [ -f "$BD_FINPATH/${BD_PACKAGE}_${BD_FINVERSION}.debian.tar.xz" ]
+      then
+        lmba_logger "This binary version has been build into a Debian package previously."
+        # Increment Debian version number by one
+        BD_DEBNUMBER=$(( $BD_DEBNUMBER + 1 ))
+    fi
+    # Now BD_DEBNUMBER is correct for this build iteration
+  else
+    # The configured version does not match the binary version of the original
+    # package, so the BD_DEBNUMBER needs to be reset to 1
+    BD_DEBNUMBER="1"
+fi
+
+# Replace the version number in the changelog file by the determined one
+# This might offer no change, but then no harm is done either
+if ! sed -i "s/$BD_FINVERSION/${BD_BINVERSION}-${BD_DEBNUMBER}/g" "$BD_PACKDIR/debian/changelog"
+  then
+    lmba_logger "The changelog file could not be updated to reflect the current build - exit!"
+    rm -rf "$BD_TEMPPATH"
+    exit 1
+fi
+
+# Jump into the package
+cd "$BD_PACKDIR"
+
+# Now build it
+if ! debuild -us -uc > "$BD_DEBUILDLOG" 2>&1
+  then
+    lmba_logger "debuild has reported errors during packaging of $BD_PACKAGE..."
+    rm -rf "$BD_TEMPPATH"
+    exit 1
+fi
+
+# Jump back up again
+cd ../
+
+# Move the changelog back to the git directory
+if ! mv "$BD_PACKDIR/debian/changelog" "$BD_GITPATH/"
+  then
+    lmba_logger "Could not update git directory of $BD_PACKAGE with the current changelog - exit!"
+    rm -rf "$BD_TEMPPATH"
+    exit 1
+fi
+
+# Remove the temporary building directory
+rm -rf "$BD_PACKDIR"
+
+# Echo the debian package file name to invocating script
+ls -1 *.deb
+
+# Move all resulting packages from the build process to the final package space
+if ! mv ./* "$BD_FINPATH/"
+  then
+    lmba_logger "Debian packages of $BD_PACKAGE could not be moved to final package space! Exit."
+    rm -rf "$BD_TEMPPATH"
+    exit 1
+fi
+
+# Cleanup and exit
+lmba_logger "Successfully finished building $BD_PACKAGE."
+rm -rf "$BD_TEMPPATH"
+exit 0

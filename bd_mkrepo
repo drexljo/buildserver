@@ -1,0 +1,219 @@
+#!/bin/bash
+
+# bd_mkrepo
+# Takes care of adding packets to and publishing the repository.
+# It expects the array file to be given as parameter 1, which contains the
+# packages and repos where they need to be added.
+
+# The exit code indicates success or failure of operation.
+
+# The following environment variables have to be set:
+# BH_GITPATH
+# BH_TEMPPATH
+
+# ================================= Copyright =================================
+# Version 0.1 (2020-05-25), Copyright (C) 2020
+# Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
+# Coauthors: -
+
+#   This file is part of the LRZ builder package (for the build server)
+
+#   This program is free software: you can redistribute it and/or modify it 
+#   under the terms of the GNU General Public License as published by the 
+#   Free Software Foundation, either version 3 of the License, or any later 
+#   version.
+#   This Program is distributed in the hope that it will be useful, but 
+#   WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY 
+#   or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License 
+#   for more details.
+
+#   You should have received a copy of the GNU General Public License
+#   along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+#   On Debian systems, the full text of the GNU General Public License
+#   version 3 can be found in the file 
+#     `/usr/share/common-licenses/GPL-3'
+
+
+# ================================= Variables =================================
+
+# Config file within the configured git path, which needs to contain all repos
+# and key passphrase files
+BR_CONFIG="mkrepo.conf"
+
+# Own temp file
+BR_TEMPFILE="bd_mkrepo.tmp"
+
+# Log file
+LMBA_LOG="/var/log/bd_helper/bd_mkrepo.log"
+
+
+# ================================= Functions =================================
+
+# Add package to repository
+br_add() {
+  # Expects the action as parameter 1
+  # Returns 0 on OK
+  # Returns 1 on failure
+  
+  local DEBFILE=$(echo "$1" | cut -d " " -f 2- -s)
+  local REPO=$(echo "$1" | cut -d " " -f 1 -s)
+
+  # Add the package file to repo
+  if aptly repo add $REPO "$DEBFILE" > /dev/null 2>&1  
+    then
+      lmba_logger "Added '$DEBFILE' to repository '$REPO'."
+    else
+      lmba_logger "Error while adding '$DEBFILE' to repository '$REPO'."
+      return 1
+  fi
+  
+  # Add the repo to the temporary file for updates, if it's not already there
+  if ! grep -E "^$REPO$" "$BR_TEMPFILE" > /dev/null 2>&1
+    then
+      echo "$REPO" >> "$BR_TEMPFILE"
+      lmba_logger "Added '$REPO' to update jobs."
+  fi
+  return 0
+}
+
+# Work through either the array file or the temporary update file
+br_loop() {
+  # Expects the action as parameter 1
+  # Returns 0 on OK
+  # Returns 1 on failure
+  
+  local ERRORS="0"
+  local JOB="$1"
+  
+  # Decide on the submodule and file to use
+  case "$JOB" in
+    add)
+      local FILE="$BR_ARRAYFILE"
+      local MODULE="br_add"
+      ;;
+    update)
+      local FILE="$BR_TEMPFILE"
+      local MODULE="br_update"
+      ;;
+    *)
+      return 1
+  esac
+  
+  # Read the file line by line
+  while read -u 9 LINE
+    do
+      # Ignore comments and empty lines
+      if echo "$LINE" | grep -E "^(\s+)?(#.*)?$" > /dev/null 2>&1
+        then
+          continue
+      fi
+      # Invocate module with the line
+      if ! $MODULE "$LINE"
+        then
+          lmba_logger "Ran into errors while working '$LINE'."
+          ERRORS=$(( $ERRORS + 1 ))
+          continue
+      fi
+    done 9<"$FILE"
+
+  # Log and return proper code
+  if [ "$ERRORS" != "0" ]
+    then
+      lmba_logger "Ran '$JOB' into errors with $ERRORS lines!"
+      return 1
+    else
+      lmba_logger "Completed '$JOB' without errors."
+      # Remove the file, since it was only necessary for this job
+      rm -f "$FILE"
+      return 0
+  fi
+}
+
+# Update repository
+br_update() {
+  # Expects the action as parameter 1
+  # Returns 0 on OK
+  # Returns 1 on failure
+  
+  local PASSFILE
+  local REPO="$1"
+  
+  # Add the repo to the temporary file for updates, if it's not already there
+  if ! PASSFILE=$(grep -E "^$REPO " "$BR_CONFIG" 2>/dev/null | cut -d " " -f 2- -s)
+    then
+      lmba_logger "Could not find '$REPO' in config file."
+      return 1
+  fi
+  
+  # Add the package file to repo
+  if aptly publish update --passphrase-file="$PASSFILE" $REPO >> "$LMBA_LOG" 2>&1  
+    then
+      lmba_logger "Updated repository '$REPO'."
+    else
+      lmba_logger "Error while updating repository '$REPO'."
+      return 1
+  fi
+  
+  return 0
+}
+
+
+# =============================== Prerequisites ===============================
+
+# Get parameters
+BR_ARRAYFILE="$1"
+
+# Source libbash-mw-basic
+if [ -f /usr/local/lib/libbash-mw/libbash-mw-basic ]
+  then
+    . /usr/local/lib/libbash-mw/libbash-mw-basic
+    lmba_logger "Start of bd_updtrepo"
+  else
+    echo "Library libbash-mw-basic missing!"
+    exit 2
+fi
+
+# Set absolute paths to work with
+BR_ARRAYFILE=$(realpath "$BR_ARRAYFILE")
+BR_CONFIG=$(realpath $BH_GITPATH/$BR_CONFIG)
+BR_TEMPFILE=$(realpath $BH_TEMPPATH/$BR_TEMPFILE)
+
+# Touch temp file to avoid errors
+touch "$BR_TEMPFILE"
+
+# Check if all files are there
+if ! lmba_checkexist "f" "$BR_ARRAYFILE" "0"
+  then
+    lmba_logger "No existing array file provided - no repository will be updated."
+    exit 1
+fi
+
+# Check if all files are there
+if ! lmba_checkexist "f" "$BR_CONFIG" "0"
+  then
+    lmba_logger "No config file found - nothing to update."
+    exit 1
+fi
+
+
+# =================================== Main ====================================
+
+# Work through the file to add packages to repos
+if ! br_loop add
+  then
+    lmba_logger "Errors occured with adding packages to repos."
+    exit 1
+fi
+
+# Publish repos
+if ! br_loop update
+  then
+    lmba_logger "Errors occured with publishing repos."
+    exit 1
+fi
+
+# Cleanup and exit
+lmba_logger "Successfully finished everything."
+rm -rf "$BR_TEMPFILE"
+exit 0

@@ -1,0 +1,162 @@
+#!/bin/bash
+
+# bd_compile takes care of the source code and its compiling, if necessary.
+# It only reports if everything was successful via exit code.
+
+# The following environment variables have to be set:
+# BH_BINPATH
+# BH_GITPATH
+# BH_SRCPKGDIR
+# BH_TEMPPATH
+# BH_UPDTPATH
+
+
+# ================================= Copyright =================================
+# Version 0.1.1 (2020-06-25), Copyright (C) 2019-2020
+# Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
+# Coauthors: -
+
+#   This file is part of the LRZ FOLIO builder package (for the build server)
+
+#   This program is free software: you can redistribute it and/or modify it 
+#   under the terms of the GNU General Public License as published by the 
+#   Free Software Foundation, either version 3 of the License, or any later 
+#   version.
+#   This Program is distributed in the hope that it will be useful, but 
+#   WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY 
+#   or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License 
+#   for more details.
+
+#   You should have received a copy of the GNU General Public License
+#   along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+#   On Debian systems, the full text of the GNU General Public License
+#   version 3 can be found in the file 
+#     `/usr/share/common-licenses/GPL-3'
+
+
+# ================================= Variables =================================
+
+# Temporary directory
+BC_TEMPDIR="bd_compile"
+
+# Helper config file name
+BC_CONFFILE="compile.conf"
+
+# Log file
+LMBA_LOG="/var/log/bd_helper/bd_compile.log"
+
+
+# ================================= Functions =================================
+
+
+
+# =============================== Prerequisites ===============================
+
+# Get parameters
+BC_PACKAGE="$1"
+BC_COMPILELOG="/var/log/bd_helper/$BC_PACKAGE.compilelog"
+
+# Source libbash-mw-basic
+if [ -f /usr/local/lib/libbash-mw/libbash-mw-basic ]
+  then
+    . /usr/local/lib/libbash-mw/libbash-mw-basic
+    lmba_logger "Start of bd_compile for $BC_PACKAGE"
+  else
+    echo "Library libbash-mw-basic missing!"
+    exit 2
+fi
+
+# Set absolute paths to work with
+BC_BINPATH=$(realpath $BH_BINPATH/$BC_PACKAGE)
+BC_GITPATH=$(realpath $BH_GITPATH/$BC_PACKAGE/$BH_SRCPKGDIR)
+BC_UPDTPATH=$(realpath $BH_UPDTPATH/$BC_PACKAGE/$BH_SRCPKGDIR)
+
+# Create temp dir
+if mkdir -p "$BH_TEMPPATH/$BC_TEMPDIR" > /dev/null 2>&1
+  then
+    BC_TEMPPATH=$(realpath $BH_TEMPPATH/$BC_TEMPDIR)
+    # Clearing out existing files (from previously unsuccessful attempts)
+    if ! rm -rf $BC_TEMPPATH/* 2>/dev/null
+      then
+        lmba_logger "Temp directory can't be sweeped, ignoring package..."
+        exit 1
+    fi
+  else
+    lmba_logger "Temp directory can't be created, ignoring package..."
+    exit 1
+fi
+
+# Check source builder config
+lmba_checkexist "f" "$BC_GITPATH/../$BC_CONFFILE" "2"
+
+# Read config (ignoring comments/empty lines)
+BC_COMPILER=$(grep -vE "^(\s+)?(#.*)?$" "$BC_GITPATH/../$BC_CONFFILE" 2> /dev/null)
+# If the resulting variable contains exactly one line, we assume the config is
+# OK
+if [ $(echo "$BC_COMPILER" | wc -l ) != "1" ]
+  then
+    # Disable the variable
+    BC_COMPILER="NUL"
+fi
+
+
+# =================================== Main ====================================
+
+# Fetch the sources from the git directory
+if ! rsync -qa --delete "$BC_UPDTPATH/" "$BC_TEMPPATH/" 2>/dev/null
+  then
+    lmba_logger "Couldn't copy the sources to temp directory, ignoring package..."
+    rm -r "$BC_TEMPPATH"
+    exit 1
+fi
+
+# Since some compilers litter the home-directory of the user, we reset that
+export HOME="$BC_TEMPPATH"
+
+# Jump to temp directory
+if ! cd "$BC_TEMPPATH" > /dev/null 2>&1
+  then
+    lmba_logger "Couldn't jump to temp directory, ignoring package..."
+    rm -r "$BC_TEMPPATH"
+    exit 1
+fi
+
+# Remove old compilelog
+rm -f "$BC_COMPILELOG"
+
+# Choose compiler from config file and execute that
+case "$BC_COMPILER" in
+  maven)
+    mvn -B clean install > "$BC_COMPILELOG" 2>&1
+    RETURN="$?"
+    ;;
+#  nodejs)
+#    ;;
+  NUL)
+    # This package is already precompiled or a script, just use it
+    RETURN="0"
+    ;;
+  *)
+    lmba_logger "Compile helper config of package $BC_PACKAGE is broken - ignoring package..."
+    RETURN="1"
+    ;;
+esac
+
+if [ "$RETURN" != "0" ]
+  then
+    lmba_logger "Compiler exited with code $RETURN!"
+# Copy back to binary directory, since we can't distinguish between binary and
+# sources for some compilers
+elif ! rsync -qa --delete "$BC_TEMPPATH/" "$BC_BINPATH/" 2>/dev/null
+  then
+    lmba_logger "Couldn't copy the compiled stuff to binary directory, ignoring package..."
+    RETURN="1"
+fi
+
+# Cleanup regardless of success
+rm -rf $BC_TEMPDIR
+rm -rf /tmp/postgresql-embed-*
+
+# Exit
+exit "$RETURN"

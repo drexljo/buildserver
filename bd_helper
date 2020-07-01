@@ -1,0 +1,623 @@
+#!/bin/bash
+
+# bd_helper
+# Will be the helper to compile, package and build a debian install package.
+
+
+# ================================= Copyright =================================
+# Version 0.2.1 (2020-06-17), Copyright (C) 2019-2020
+# Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
+# Coauthors: -
+
+#   This file is part of the LRZ FOLIO builder package (for the build server)
+
+#   This program is free software: you can redistribute it and/or modify it 
+#   under the terms of the GNU General Public License as published by the 
+#   Free Software Foundation, either version 3 of the License, or any later 
+#   version.
+#   This Program is distributed in the hope that it will be useful, but 
+#   WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY 
+#   or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License 
+#   for more details.
+
+#   You should have received a copy of the GNU General Public License
+#   along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+#   On Debian systems, the full text of the GNU General Public License
+#   version 3 can be found in the file 
+#     `/usr/share/common-licenses/GPL-3'
+
+
+# ================================= Variables =================================
+
+# Temporary directory
+BH_TEMPPATH="/tmp/bd_helper"
+
+# Working directory
+BH_WORKPATH="/srv/bob_the_builder"
+
+# Git directory (within working directory)
+BH_GITDIR="gitlab"
+
+# Update directory (within working directory; will contain a copy of BH_GITDIR)
+BH_UPDTDIR="update_diff"
+
+# Compiled sources (within working directory)
+BH_BINDIR="compiled"
+
+# Final package space (within working directory)
+BH_FINDIR="packages"
+
+# Helper job config (within BH_GITDIR and BH_UPDTDIR)
+BH_JOBFILE="bd_helper.jobs"
+
+# Sources directory (within each packages directory)
+BH_SRCPKGDIR="source"
+
+# Original packaging additional files directory 
+# (within each packages directory in BH_GITDIR and BH_UPDTDIR)
+BH_ORGPKGDIR="orig-packaging"
+
+# Debian packaging additional files directory
+# (within each packages directory in BH_GITDIR and BH_UPDTDIR)
+BH_DEBPKGDIR="deb-packaging"
+
+# Script that returns the current binary version for a package when executed in
+# the binary directory (MANDATORY)
+BH_GETVERSION="version.sh"
+
+# Config file that contains the names of the repos to which a package should
+# be added
+BH_REPOCONF="repos.conf"
+
+# Array file to be created when a package is to be added to a repository
+BH_REPOADD="repo_additions.array"
+
+# Log file
+LMBA_LOG="/var/log/bd_helper/bd_helper.log"
+#LMBA_STARTTIME="$(date +'%s.%N')"
+
+# PID file
+LMBA_PIDFILE="/tmp/bd_helper.pid"
+
+# Subscripts
+BH_COMPILER="bd_compile"
+BH_MKORIG="bd_mkorig"
+BH_MKDEB="bd_mkdeb"
+BH_MKREPO="bd_mkrepo"
+
+
+# ================================= Functions =================================
+
+# Check if all files and directories expected are available
+bh_check() {
+  # Expects the package name as parameter 1
+  # Returns 0 on all ok
+  # Returns 1 on any unrepairable failure
+  
+  local PACKAGE="$1"
+  
+  # Check package directory
+  if ! lmba_checkexist "d" "$BH_GITPATH/$PACKAGE" "0"
+    then
+      lmba_logger "Git directory for '$PACKAGE' does not exist, ignoring package..."
+      return 1
+  fi
+  # Check the git directories for the package
+  # Source directory
+  if ! lmba_checkexist "d" "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR" "0"
+    then
+      lmba_logger "There are no sources for $PACKAGE - stopping here!"
+      return 1
+  fi
+  # Original integration files directory
+  if ! lmba_checkexist "d" "$BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR" "0"
+    then
+      lmba_logger "There is no original files package for $PACKAGE - stopping here!"
+      return 1
+  fi
+  # Debian files directory
+  if ! lmba_checkexist "d" "$BH_GITPATH/$PACKAGE/$BH_DEBPKGDIR" "0"
+    then
+      lmba_logger "There is no debian files package for $PACKAGE - stopping here!"
+      return 1
+  fi
+  # Just try to create all directories in the update dir; its only important
+  # they exist in the end.
+  # Source directory
+  if ! mkdir -p "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR"
+    then
+      lmba_logger "Could not create source update directory for $PACKAGE - stopping here!"
+      return 1
+  fi
+  # Original integration files directory
+  if ! mkdir -p "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR"
+    then
+      lmba_logger "Could not create original files update directory for $PACKAGE - stopping here!"
+      return 1
+  fi
+  # Debian files directory
+  if ! mkdir -p "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR"
+    then
+      lmba_logger "Could not create debian files update directory for $PACKAGE - stopping here!"
+      return 1
+  fi
+  # Compiled stuff directory
+  if ! mkdir -p "$BH_BINPATH/$PACKAGE"
+    then
+      lmba_logger "Could not create binary resting directory for $PACKAGE - stopping here!"
+      return 1
+  fi
+  # Final package directory
+  if ! mkdir -p "$BH_FINPATH/$PACKAGE"
+    then
+      lmba_logger "Could not create final resting directory for $PACKAGE - stopping here!"
+      return 1
+  fi
+  # All ok
+  return 0
+}
+
+# Updates a git repo
+bh_git() {
+  # Expects the action as parameter 1, and the directory as parameter 2
+  # Echoes "CHANGE" or "NOCHANGE" depending on what was done.
+  # Returns 0 on OK
+  # Returns 1 on failure
+  
+  # Fetch variables
+  local ACTION="$1"
+  local DIRECTORY="$2"
+  local HERE="$PWD"
+  local RETURN
+  local STATEMENT
+  
+  # Check for directory existence
+  if [ ! -d "$DIRECTORY" ]
+    then
+      return 1
+  fi
+  # Jump to directory
+  if ! cd "$DIRECTORY" > /dev/null 2>&1
+    then
+      return 1
+  fi
+  # Decide for action and corresponding return statement for no change
+  case "$ACTION" in
+    pull)
+      STATEMENT="Already up to date."
+      ACTION="pull --recurse-submodules"
+      ;;
+    push)
+      STATEMENT="Everything up-to-date"
+      # We need to add all files in this case
+      if ! git add * >/dev/null 2>&1
+        then
+          cd "$HERE"
+          return 1
+      fi
+      if ! git commit -m "Automatic commit from $HOSTNAME" >/dev/null 2>&1
+        then
+          cd "$HERE"
+          return 1
+      fi
+      ;;
+    *)
+      # This action is not defined
+      cd "$HERE"
+      return 1
+      ;;
+  esac
+  # Execute git command
+  RETURN=$(git $ACTION 2>/dev/null)
+  if [ "$?" != "0" ]
+    then
+      lmba_logger "Git update was not possible. Please check!"
+      cd "$HERE"
+      return 1
+  fi
+  # Check for update
+  if [ "$RETURN" = "$STATEMENT" ]
+    then
+      echo "NOCHANGE"
+    else
+      echo "CHANGE"
+  fi
+  cd "$HERE"
+  return 0
+}
+
+# Provides a helping hand
+bh_help() {
+  echo "empty"
+  exit 0
+}
+
+# Reads the job file to decide which packages to work with
+bh_loop() {
+  # Returns 0 on OK
+  # Returns 1 if some error occured
+  
+  local ERRORS="0"
+  local JOBFILE="$1"
+  local PACKAGE
+  
+  # Read the file line by line
+  while read -u 3 PACKAGE
+    do
+      # Ignore comments and empty lines
+      if echo "$PACKAGE" | grep -E "^(\s+)?(#.*)?$" > /dev/null 2>&1
+        then
+          continue
+      fi
+      lmba_logger "Processing $PACKAGE..."
+      # Check all directories
+      if ! bh_check $PACKAGE
+        then
+          lmba_logger "Ran into errors while checking $PACKAGE directories."
+          ERRORS=$(( $ERRORS + 1 ))
+          continue
+      fi
+      # Invoke worker
+      if ! bh_worker "$PACKAGE"
+        then
+          ERRORS=$(( $ERRORS + 1 ))
+      fi
+    done 3<"$JOBFILE"
+
+  # Log and return proper code
+  if [ "$ERRORS" != "0" ]
+    then
+      lmba_echolog "Ran into errors with $ERRORS packages!"
+      return 1
+    else
+      lmba_logger "Exited without errors."
+      return 0
+  fi
+}
+
+# Works the whole budget through
+bh_worker() {
+  # Expects the package name as parameter 1
+  # Returns 0 on all ok
+  # Returns 1 on any unrepairable failure
+  
+  local HERE="$PWD"
+  local ORGPKG
+  local PACKAGE="$1"
+  local UPDATE
+  
+  ### COMPILING ###
+  # Check if the package directory in BH_UPDTPATH is empty
+  if [ "$(ls -1 "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR" | wc -l)" = "0" ]
+    then
+      # Content was not yet initialized for this package; do it now
+      if [ -f "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR/GITURL" ]
+        then
+          # Clone git directory directly to BH_UPDTPATH of the package
+          git clone --recurse-submodules $(<"$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR/GITURL") "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR"
+        else
+          # Copy files to create an inital set
+          rsync -aq "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR/" "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR/" 2>/dev/null
+      fi
+      # Get return code
+      if [ "$?" = "0" ]
+        then
+          UPDATE="yes"
+        else
+          lmba_logger "Initializing of git for package $PACKAGE failed - stopping here!"
+          return 1
+      fi
+  elif [ -f "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR/GITURL" ]
+    # GIT ONLY - Check if there was an update
+    then
+      if [ "$(bh_git pull "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR")" = "CHANGE" ]
+        then
+          UPDATE="yes"
+        else
+          UPDATE="no"
+          # Check if there are changes for version files, since the update
+          # directory is only updated on successful build
+          if [ -f "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR/pom.xml" ]
+            then
+              if ! diff "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR/pom.xml" "$BH_BINPATH/$PACKAGE/pom.xml" > /dev/null 2>&1
+                then
+                  UPDATE="yes"
+              fi
+          fi
+      fi
+    else
+      # Make out differences between the git source directory of that package and
+      # the former version saved in BH_UPDTPATH
+      if diff -r "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR" "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR" > /dev/null 2>&1
+        then
+          UPDATE="no"
+        else
+          UPDATE="yes"
+          # Update the update directory
+          if ! rsync -auq --delete "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR/" "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR/" 2>/dev/null
+            then
+              # Failure is grave, since the compiling script works from the
+              # update directory
+              lmba_logger "Could not copy the source to the local update directory!"
+          fi
+      fi
+  fi
+  # Execute compiler subscript only if there were changes to the sources
+  if [ "$UPDATE" = "yes" ]
+    then
+      if ! $BH_COMPILER "$PACKAGE"
+        then
+          lmba_logger "Compiling subscript returned an error compiling package $PACKAGE - stopping here!"
+          return 1
+      fi
+  fi
+  
+  ### ORIGINAL PACKAGING ###
+  # ORGPKG will contain the finished package name to further work on it,
+  # regardless if one had to be build or not
+  
+  # Find out the version number
+  if BH_VERSION=$(cd $BH_BINPATH/$PACKAGE && $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/$BH_GETVERSION)
+    then
+      export BH_VERSION
+    else
+      lmba_logger "$BH_GETVERSION returned an error - can't continue with $PACKAGE!"
+      return 1
+  fi
+  
+  # Don't overwrite a 'yes' in UPDATE set by the compiling section
+  if [ "$UPDATE" != "yes" ]
+    then
+      # Check if there is already an original package which could be used
+      # instead of a newly build one if necessary (fallback)
+      ORGPKG=$(ls -1 $BH_FINPATH/$PACKAGE/ | grep -v ".orig.tar.gz.old" | grep ".orig.tar.gz" | tail -n 1)
+      # Look if there's a difference between the update directory and the git
+      # one to determine if there was an update
+      if ! diff -r "$BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR" "$BH_UPDTPATH/$PACKAGE/$BH_ORGPKGDIR" > /dev/null 2>&1
+        then
+          UPDATE="yes"
+      # Check again if the fallback is really a file; if not we have to build
+      # a package
+      elif [ "$ORGPKG" != "" -a -f "$BH_FINPATH/$PACKAGE/$ORGPKG" ]
+        then
+          UPDATE="no"
+        else
+          UPDATE="yes"
+      fi
+  fi
+  # Only build a new package, if it's necessary
+  if [ "$UPDATE" = "yes" ]
+    then
+      # Execute original packaging subscript
+      if ! ORGPKG=$($BH_MKORIG "$PACKAGE")
+        then
+          lmba_logger "Packaging subscript returned an error with $PACKAGE - stopping here!"
+          return 1
+      fi
+      # Update the update directory
+      if ! rsync -auq --delete "$BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/" "$BH_UPDTPATH/$PACKAGE/$BH_ORGPKGDIR/" 2>/dev/null
+        then
+          # Failure is not grave, it just means it will be recognized as "new"
+          # every time the script is running, which may lead to wasting of
+          # ressources
+          lmba_logger "Could not copy the original integration files to the local update directory!"
+      fi
+  fi
+  
+  ### DEBIAN PACKAGING ###
+  # DEBPKG will contain the finished package name, if a new one was created.
+  
+  # Don't overwrite a 'yes' in UPDATE set by the original packaging section
+  if [ "$UPDATE" != "yes" ]
+    then
+      # Look if there's a difference between the update directory and the git
+      # one to determine if there was an update
+      if ! diff -r "$BH_GITPATH/$PACKAGE/$BH_DEBPKGDIR" "$BH_UPDTPATH/$PACKAGE/$BH_DEBPKGDIR" > /dev/null 2>&1
+        then
+          UPDATE="yes"
+        else
+          # Well, if there's still no update, we quit here
+          lmba_logger "Package $PACKAGE did not receive updates, so the buildchain has nothing to do."
+          return 0
+      fi
+  fi
+  
+  # Build the Debian package
+  if DEBPKG=$("$BH_MKDEB" "$PACKAGE" "$ORGPKG")
+    then
+      lmba_logger "Debian packaging subscript created $DEBPKG."
+    else
+      lmba_logger "Debian packaging subscript returned an error with $PACKAGE - stopping here!"
+      return 1
+  fi
+  # Update the update directory
+  if ! rsync -auq --delete "$BH_GITPATH/$PACKAGE/$BH_DEBPKGDIR/" "$BH_UPDTPATH/$PACKAGE/$BH_DEBPKGDIR/" 2>/dev/null
+    then
+      # Failure is not grave, it just means it will be recognized as "new"
+      # every time the script is running, which may lead to wasting of
+      # ressources
+      lmba_logger "Could not copy the Debian packaging files to the local update directory!"
+  fi
+  
+  ### DEBIAN REPOSITORY MANAGEMENT ###
+  # This will only create entries in the array file, the actual adding to repo
+  # and updating them will be done in the end.
+  
+  # Check if there's a repository config file
+  # It's not critical if there's none, since some packages shouldn't be pushed
+  # to a repository, for example test builds.
+  if [ ! -f "$BH_GITPATH/$PACKAGE/$BH_REPOCONF" ]
+    then
+      lmba_logger "Package $PACKAGE has no repo config file, no push to repo will be done."
+      return 1
+  fi
+  # Read the repository config file for this package
+  while read -u 4 REPOSITORY
+    do
+      # Ignore comments and empty lines
+      if echo "$REPOSITORY" | grep -E "^(\s+)?(#.*)?$" > /dev/null 2>&1
+        then
+          continue
+      fi
+      # Add a job to the array file
+      echo "$REPOSITORY $BH_FINPATH/$PACKAGE/$DEBPKG" >> "$BH_TEMPPATH/$BH_REPOADD"
+      lmba_logger "$DEBPKG added to addition queue for repository $REPOSITORY."
+    done 4<"$BH_GITPATH/$PACKAGE/$BH_REPOCONF"
+
+  return 0
+}
+
+
+# =============================== Prerequisites ===============================
+
+# We're setting the path variable anew because some systems have that wrong
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Get script PID
+LMBA_MYPID="$$"
+
+# Print the help, if something on those lines was provided
+case $1 in
+  -?)
+    bh_help
+    ;;
+  -h)
+    bh_help
+    ;;
+  --help)
+    bh_help
+    ;;
+  help)
+    bh_help
+    ;;
+esac
+# bh_help includes an exit statement, so matching one of those means exit here
+
+# Source libbash-mw-basic
+if [ -f /usr/local/lib/libbash-mw/libbash-mw-basic ]
+  then
+    . /usr/local/lib/libbash-mw/libbash-mw-basic
+    lmba_logger "Start of bd_helper"
+  else
+    echo "Library libbash-mw-basic missing!"
+    exit 2
+fi
+
+# Prohibit parallel runs
+if ! lmba_pidfile set
+  then
+    # Exit quietly
+    exit 0
+fi
+
+# Check if the working directory and all subdirs exist, and reformat them to
+# absolute paths, just to be on the safe side
+# Work directory, where everything resides (has to exist)
+lmba_checkexist "d" "$BH_WORKPATH" "22"
+BH_WORKPATH=$(realpath $BH_WORKPATH)
+# Git directory within the work directory (has to exist)
+lmba_checkexist "d" "$BH_WORKPATH/$BH_GITDIR" "22"
+BH_GITPATH=$(realpath $BH_WORKPATH/$BH_GITDIR)
+# Check if it's a valid git repo
+if ! $(cd $BH_GITPATH && git status >/dev/null 2>&1)
+  then
+    lmba_echolog "The git directory does not contain a valid git repo!"
+    exit 1
+fi
+
+# Update directory within the work directory
+if mkdir -p "$BH_WORKPATH/$BH_UPDTDIR" >/dev/null 2>&1
+  then
+    BH_UPDTPATH=$(realpath $BH_WORKPATH/$BH_UPDTDIR)
+  else
+    lmba_echolog "Can't create the update dir within the work directory. This is grave!"
+    exit 22
+fi
+
+# Binary directory within the work directory
+if mkdir -p "$BH_WORKPATH/$BH_BINDIR" >/dev/null 2>&1
+  then
+    BH_BINPATH=$(realpath $BH_WORKPATH/$BH_BINDIR)
+  else
+    lmba_echolog "Can't create the packages binary storage place. This is grave!"
+    exit 22
+fi
+
+# Final directory within the work directory
+if mkdir -p "$BH_WORKPATH/$BH_FINDIR" >/dev/null 2>&1
+  then
+    BH_FINPATH=$(realpath $BH_WORKPATH/$BH_FINDIR)
+  else
+    lmba_echolog "Can't create the packages final storage place. This is grave!"
+    exit 22
+fi
+
+# Create temp directory
+if ! mkdir -p "$BH_TEMPPATH" > /dev/null 2>&1
+  then
+    lmba_echolog "Could not create '$BH_TEMPPATH'!"
+    exit 1
+fi
+
+
+# =================================== Main ====================================
+
+# Set the necessary environment variables for subscripts
+export BH_BINPATH
+export BH_DEBPKGDIR
+export BH_FINPATH
+export BH_GITPATH
+export BH_ORGPKGDIR
+export BH_SRCPKGDIR
+export BH_TEMPPATH
+export BH_UPDTPATH
+
+# Get git update
+if ! BH_GITUPDT=$(bh_git pull "$BH_GITPATH")
+  then
+    # Git returned an error
+    lmba_logger "Git updates could not be downloaded - can't work this way!"
+    rm -rf "$BH_TEMPPATH"
+    exit 1
+fi
+
+# Check for jobs file
+lmba_checkexist "f" "$BH_GITPATH/$BH_JOBFILE" "22"
+# Copy it over to the update directory
+if ! rsync -auq "$BH_GITPATH/$BH_JOBFILE" "$BH_UPDTPATH/" 2>/dev/null
+  then
+    lmba_logger "Could not copy job file to update directory"
+fi
+
+# Loop through the job config file and process the mentioned software packages
+bh_loop "$BH_GITPATH/$BH_JOBFILE"
+# Fetch the return code
+RETURN="$?"
+
+# Update git repo
+if ! bh_git push "$BH_GITPATH" > /dev/null
+  then
+    lmba_logger "Could not push changes to git repo!"
+fi
+
+# Update Debian repositories
+if [ -f "$BH_TEMPPATH/$BH_REPOADD" ]
+  then
+    if ! "$BH_MKREPO" "$BH_TEMPPATH/$BH_REPOADD" 2>/dev/null
+      then
+        lmba_logger "Errors occured during Debian repository push."
+    fi
+fi
+ 
+# Clear the temp dir, it's no longer necessary
+rm -rf "$BH_TEMPPATH"
+
+# Clear the PID file
+if ! lmba_pidfile delete
+  then
+    exit 1
+fi
+
+# Exit with the loops exit code
+exit "$RETURN"

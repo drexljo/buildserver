@@ -1,0 +1,229 @@
+#!/bin/bash
+
+# bd_mkorig takes care of building the original tarball, if necessary. It
+# expects being run in the additional contents directory and also a 'yes' or 
+# 'no' as parameter 1, indicating a change in the original sources. On a 'no' 
+# it nonetheless updates the own additional files directory, and if that has 
+# changed inbetween it builds a new tarball overwriting the old one in the 
+# package target directory. In the end it echoes the package name back to the 
+# invocating process, or 'NONE', if no change did occur.
+# The exit code indicates success or failure of operation.
+
+# The following environment variables have to be set:
+# BH_BINPATH
+# BH_FINPATH
+# BH_GITPATH
+# BH_ORGPKGDIR
+# BH_TEMPPATH
+# BH_VERSION
+
+
+# ================================= Copyright =================================
+# Version 0.1 (2020-01-29), Copyright (C) 2019-2020
+# Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
+# Coauthors: -
+
+#   This file is part of the LRZ FOLIO builder package (for the build server)
+
+#   This program is free software: you can redistribute it and/or modify it 
+#   under the terms of the GNU General Public License as published by the 
+#   Free Software Foundation, either version 3 of the License, or any later 
+#   version.
+#   This Program is distributed in the hope that it will be useful, but 
+#   WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY 
+#   or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License 
+#   for more details.
+
+#   You should have received a copy of the GNU General Public License
+#   along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+#   On Debian systems, the full text of the GNU General Public License
+#   version 3 can be found in the file 
+#     `/usr/share/common-licenses/GPL-3'
+
+
+# ================================= Variables =================================
+
+# Temporary directory
+BO_TEMPDIR="bd_mkorig"
+
+# Helper config file name
+BO_CONFFILE="mkorig.conf"
+
+# Log file
+LMBA_LOG="/var/log/bd_helper/bd_mkorig.log"
+
+
+# ================================= Functions =================================
+
+# Copy files to their filesystem destination of the resulting package
+bo_linecopy() {
+  # Takes the config line as parameter 1.
+  # Returns 0 for OK
+  # Returns 1 for failure
+  
+  # Set local variables
+  local ORIGIN="$(echo "$1" | cut -d ';' -f 1 -s)"
+  local SOURCE="$(echo "$1" | cut -d ';' -f 2 -s)"
+  local TARGET="$(echo "$1" | cut -d ';' -f 3 -s)"
+  
+  # Decide on origin
+  case "$ORIGIN" in
+    bin)
+      ORIGIN="$BO_BINPATH"
+      ;;
+    sin)
+      ORIGIN="$BO_GITPATH"
+      ;;
+    *)
+      # Without a proper origin directory it's futile to continue
+      lmba_logger "No origin defined here: $1"
+      return 1
+      ;;
+  esac
+  # Check empty source variable
+  if [ "$SOURCE" = "" ]
+    then
+      lmba_logger "No source defined here: $1"
+      return 1
+  fi
+  # Check empty target variable
+  if [ "$TARGET" = "" ]
+    then
+      lmba_logger "No target defined here: $1"
+      return 1
+  fi
+  
+  # Check nonexistence of source
+  if ! [ -d "$ORIGIN/$SOURCE" -o -f "$ORIGIN/$SOURCE" ]
+    then
+      lmba_logger "$ORIGIN/$SOURCE: No such file or directory!"
+      return 1
+  fi
+
+  # Create the target directory hierarchy within the temporary directory
+  if ! mkdir -p "$(dirname $BO_RAWPATH/$TARGET)"
+    then
+      lmba_logger "Could not create target directory '$(dirname $BO_RAWPATH/$TARGET)'!"
+      return 1
+  fi
+  lmba_logger "Copying $ORIGIN/$SOURCE to $BO_RAWPATH/$TARGET"
+  # Copy the source to the target
+  if ! cp -r "$ORIGIN/$SOURCE" "$BO_RAWPATH/$TARGET"
+    then
+      lmba_logger "Could not copy all files from '$ORIGIN/$SOURCE'!"
+      return 1
+  fi
+  
+  return 0
+}
+
+
+# =============================== Prerequisites ===============================
+
+# Get parameters
+BO_PACKAGE="$1"
+
+# Source libbash-mw-basic
+if [ -f /usr/local/lib/libbash-mw/libbash-mw-basic ]
+  then
+    . /usr/local/lib/libbash-mw/libbash-mw-basic
+    lmba_logger "Start of bd_mkorig for $BO_PACKAGE"
+  else
+    echo "Library libbash-mw-basic missing!"
+    exit 2
+fi
+
+# Set absolute paths to work with
+BO_BINPATH=$(realpath $BH_BINPATH/$BO_PACKAGE)
+BO_GITPATH=$(realpath $BH_GITPATH/$BO_PACKAGE/$BH_ORGPKGDIR)
+BO_FINPATH=$(realpath $BH_FINPATH/$BO_PACKAGE)
+
+# Create temp dir
+if mkdir -p "$BH_TEMPPATH/$BO_TEMPDIR" > /dev/null 2>&1
+  then
+    BO_TEMPPATH=$(realpath $BH_TEMPPATH/$BO_TEMPDIR)
+    # Clearing out existing files (from previously unsuccessful attempts)
+    if ! rm -rf $BO_TEMPPATH/* 2>/dev/null
+      then
+        lmba_logger "Temp directory can't be sweeped, ignoring package..."
+        exit 1
+    fi
+  else
+    lmba_logger "Temp directory can't be created, ignoring package..."
+    exit 1
+fi
+
+# Check package builder config
+lmba_checkexist "f" "$BO_GITPATH/$BO_CONFFILE" "2"
+
+# Check version provider script
+lmba_checkexist "x" "$BO_GITPATH/$BO_GETVERSION" "2"
+
+
+# =================================== Main ====================================
+
+# Find out the version number
+if [ "$BH_VERSION" != "" ]
+  then
+    BO_PKGNAME="${BO_PACKAGE}_$BH_VERSION.orig.tar.gz"
+    # Give that back to the invocating script
+    echo "$BO_PKGNAME"
+  else
+    lmba_logger "No version number found - can't continue with $BO_PACKAGE!"
+    rm -rf "$BO_TEMPPATH"
+    exit 1
+fi
+
+# Check if there was already a package build with the resulting name
+if [ -f "$BO_FINPATH/$BO_PKGNAME" ]
+  then
+    # Move the old package away, if there is one
+    if ! mv $BO_FINPATH/$BO_PKGNAME $BO_FINPATH/$BO_PKGNAME.old > /dev/null 2>&1
+      then
+        lmba_logger "There was already an unmovable package named $BO_PKGNAME!"
+        rm -r "$BO_TEMPPATH"
+        exit 1
+    fi
+fi
+
+# The original package has to contain the software within a single
+# directory named after software and version - create its directory
+BO_RAWPATH="$BO_TEMPPATH/${BO_PACKAGE}-$BH_VERSION"
+if ! mkdir -p "$BO_RAWPATH" > /dev/null 2>&1
+  then
+    lmba_logger "No package directory, no package - out we go with $BO_PKGNAME!"
+    rm -r "$BO_TEMPPATH"
+    exit 1
+fi
+
+# Read Config & copy all files to raw path
+while read -u 4 LINE
+  do
+    # Ignore empty lines & comments
+    if echo "$LINE" | grep -E "^(\s+)?(#.*)?$" > /dev/null 2>&1
+      then
+        continue
+    fi
+    # Now it's just reading which file is to be put where in the resulting 
+    # folder structure
+    if ! bo_linecopy "$LINE"
+      then
+        lmba_logger "Returning an error here results in a broken $BO_PKGNAME package, so we quit here."
+        rm -r "$BO_TEMPPATH"
+        exit 1
+    fi
+  done 4< "$BO_GITPATH/$BO_CONFFILE"
+
+# Wrap it up
+if ! tar -czf "$BO_FINPATH/$BO_PKGNAME" -C "$BO_TEMPPATH" "${BO_PACKAGE}-$BH_VERSION"
+  then
+    lmba_logger "$BO_PKGNAME could not be created!"
+    rm -r "$BO_TEMPPATH"
+    exit 1
+fi
+
+# Cleanup and finish
+lmba_logger "$BO_PKGNAME created."
+rm -r "$BO_TEMPPATH"
+exit 0
