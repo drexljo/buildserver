@@ -5,7 +5,7 @@
 
 
 # ================================= Copyright =================================
-# Version 0.2.1 (2020-06-17), Copyright (C) 2019-2020
+# Version 0.2.2 (2020-07-13), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -592,8 +592,6 @@ fi
 
 # Loop through the job config file and process the mentioned software packages
 bh_loop "$BH_GITPATH/$BH_JOBFILE"
-# Fetch the return code
-RETURN="$?"
 
 # Update git repo
 if ! bh_git push "$BH_GITPATH" > /dev/null
@@ -619,5 +617,5 @@ if ! lmba_pidfile delete
     exit 1
 fi
 
-# Exit with the loops exit code
-exit "$RETURN"
+# This movie is over
+exit 0
