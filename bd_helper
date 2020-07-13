@@ -268,7 +268,7 @@ bh_loop() {
   # Log and return proper code
   if [ "$ERRORS" != "0" ]
     then
-      lmba_echolog "Ran into errors with $ERRORS packages!"
+      lmba_logger "Ran into errors with $ERRORS packages!"
       return 1
     else
       lmba_logger "Exited without errors."
