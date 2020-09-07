@@ -5,7 +5,7 @@
 
 
 # ================================= Copyright =================================
-# Version 0.2.3 (2020-09-07), Copyright (C) 2019-2020
+# Version 0.2.4 (2020-09-07), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -68,6 +68,7 @@ BH_GETVERSION="version.sh"
 
 # Script that is able to modify files after the build process was successful
 # It has to reside in the original package directory and will be executed there
+# It will get the package name as parameter 1
 BH_MODIFY="modify.sh"
 
 # Config file that contains the names of the repos to which a package should
@@ -376,7 +377,7 @@ bh_worker() {
   if [ -f "$BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/$BH_MODIFY" ]
     then
       # Execute it; bail out if exit code is not zero
-      if ! BH_DEVNULL=$(cd $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR && $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/$BH_MODIFY)
+      if ! BH_DEVNULL=$(cd $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR && $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/$BH_MODIFY $PACKAGE)
         then
           lmba_logger "$BH_MODIFY returned an error - can't continue with $PACKAGE!"
           return 1
