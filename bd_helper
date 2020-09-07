@@ -5,7 +5,7 @@
 
 
 # ================================= Copyright =================================
-# Version 0.2.2 (2020-07-13), Copyright (C) 2019-2020
+# Version 0.2.3 (2020-09-07), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -65,6 +65,10 @@ BH_DEBPKGDIR="deb-packaging"
 # Script that returns the current binary version for a package when executed in
 # the binary directory (MANDATORY)
 BH_GETVERSION="version.sh"
+
+# Script that is able to modify files after the build process was successful
+# It has to reside in the original package directory and will be executed there
+BH_MODIFY="modify.sh"
 
 # Config file that contains the names of the repos to which a package should
 # be added
@@ -365,6 +369,19 @@ bh_worker() {
       lmba_logger "$BH_GETVERSION returned an error - can't continue with $PACKAGE!"
       return 1
   fi
+  
+  # For some packages there's a need to modify files in the original package
+  # directory. If the directory contains such a modification script, it will be 
+  # executed
+  if [ -f "$BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/$BH_MODIFY" ]
+    then
+      # Execute it; bail out if exit code is not zero
+      if ! BH_DEVNULL=$(cd $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR && $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/$BH_MODIFY)
+        then
+          lmba_logger "$BH_MODIFY returned an error - can't continue with $PACKAGE!"
+          return 1
+      fi
+  fi  
   
   # Don't overwrite a 'yes' in UPDATE set by the compiling section
   if [ "$UPDATE" != "yes" ]

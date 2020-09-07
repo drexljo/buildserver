@@ -12,7 +12,7 @@
 # BH_TEMPPATH
 
 # ================================= Copyright =================================
-# Version 0.1 (2020-05-25), Copyright (C) 2020
+# Version 0.1.1 (2020-07-20), Copyright (C) 2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -147,7 +147,7 @@ br_update() {
   fi
   
   # Add the package file to repo
-  if aptly publish update --passphrase-file="$PASSFILE" $REPO >> "$LMBA_LOG" 2>&1  
+  if aptly publish update --passphrase-file="$HOME/$PASSFILE" "$REPO" >> "$LMBA_LOG" 2>&1  
     then
       lmba_logger "Updated repository '$REPO'."
     else
