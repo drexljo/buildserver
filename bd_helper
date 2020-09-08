@@ -5,7 +5,7 @@
 
 
 # ================================= Copyright =================================
-# Version 0.2.4 (2020-09-07), Copyright (C) 2019-2020
+# Version 0.2.5 (2020-09-08), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -371,19 +371,6 @@ bh_worker() {
       return 1
   fi
   
-  # For some packages there's a need to modify files in the original package
-  # directory. If the directory contains such a modification script, it will be 
-  # executed
-  if [ -f "$BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/$BH_MODIFY" ]
-    then
-      # Execute it; bail out if exit code is not zero
-      if ! BH_DEVNULL=$(cd $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR && $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/$BH_MODIFY $PACKAGE)
-        then
-          lmba_logger "$BH_MODIFY returned an error - can't continue with $PACKAGE!"
-          return 1
-      fi
-  fi  
-  
   # Don't overwrite a 'yes' in UPDATE set by the compiling section
   if [ "$UPDATE" != "yes" ]
     then
@@ -407,6 +394,18 @@ bh_worker() {
   # Only build a new package, if it's necessary
   if [ "$UPDATE" = "yes" ]
     then
+      # For some packages there's a need to modify files in the original package
+      # directory. If the directory contains such a modification script, it will be 
+      # executed
+      if [ -f "$BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/$BH_MODIFY" ]
+        then
+          # Execute it; bail out if exit code is not zero
+          if ! BH_DEVNULL=$(cd $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR && $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/$BH_MODIFY $PACKAGE)
+            then
+              lmba_logger "$BH_MODIFY returned an error - can't continue with $PACKAGE!"
+              return 1
+          fi
+      fi
       # Execute original packaging subscript
       if ! ORGPKG=$($BH_MKORIG "$PACKAGE")
         then
