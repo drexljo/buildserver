@@ -12,7 +12,7 @@
 
 
 # ================================= Copyright =================================
-# Version 0.1.1 (2020-06-25), Copyright (C) 2019-2020
+# Version 0.1.2 (2020-09-10), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -91,13 +91,29 @@ fi
 lmba_checkexist "f" "$BC_GITPATH/../$BC_CONFFILE" "2"
 
 # Read config (ignoring comments/empty lines)
-BC_COMPILER=$(grep -vE "^(\s+)?(#.*)?$" "$BC_GITPATH/../$BC_CONFFILE" 2> /dev/null)
-# If the resulting variable contains exactly one line, we assume the config is
-# OK
-if [ $(echo "$BC_COMPILER" | wc -l ) != "1" ]
+BC_COMPILECONF=$(grep -vE "^(\s+)?(#.*)?$" "$BC_GITPATH/../$BC_CONFFILE" 2> /dev/null)
+# If the resulting config contains more than one line, it's broken
+if [ $(echo "$BC_COMPILECONF" | wc -l) != "1" ]
   then
-    # Disable the variable
-    BC_COMPILER="NUL"
+    lmba_logger "'$BC_CONFFILE' is all wrong, ignoring package..."
+    exit 1
+fi
+
+# Split, if a subfolder of the git was declared the root for the compiler
+BC_COMPILER=$(echo "$BC_COMPILECONF" | cut -d " " -f 1)
+BC_BUILDROOT=$(echo "$BC_COMPILECONF" | cut -d " " -f 2 -s)
+
+# If the resulting compiler variable is empty, we can't work with it
+if [ "$BC_COMPILER" = "" ]
+  then
+    lmba_logger "'$BC_CONFFILE' features no proper compiler, ignoring package..."
+    exit 1
+fi
+# Check if the build root exists
+if [ ! -d "$BC_UPDTPATH/$BC_BUILDROOT" ]
+  then
+    lmba_logger "'$BC_CONFFILE' features no proper compiler root, ignoring package..."
+    exit 1
 fi
 
 
@@ -115,7 +131,7 @@ fi
 export HOME="$BC_TEMPPATH"
 
 # Jump to temp directory
-if ! cd "$BC_TEMPPATH" > /dev/null 2>&1
+if ! cd "$BC_TEMPPATH/$BC_BUILDROOT" > /dev/null 2>&1
   then
     lmba_logger "Couldn't jump to temp directory, ignoring package..."
     rm -r "$BC_TEMPPATH"
@@ -127,14 +143,17 @@ rm -f "$BC_COMPILELOG"
 
 # Choose compiler from config file and execute that
 case "$BC_COMPILER" in
+  gradle)
+    gradle --console plain -g "$BC_TEMPPATH" build > "$BC_COMPILELOG" 2>&1
+    RETURN="$?"
+    ;;
   maven)
     mvn -B clean install > "$BC_COMPILELOG" 2>&1
     RETURN="$?"
     ;;
-#  nodejs)
-#    ;;
   NUL)
     # This package is already precompiled or a script, just use it
+    echo "No compile necessary." > "$BC_COMPILELOG" 2>&1
     RETURN="0"
     ;;
   *)
