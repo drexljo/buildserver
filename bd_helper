@@ -5,7 +5,7 @@
 
 
 # ================================= Copyright =================================
-# Version 0.2.5 (2020-09-08), Copyright (C) 2019-2020
+# Version 0.2.6 (2020-09-11), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -321,14 +321,12 @@ bh_worker() {
           UPDATE="yes"
         else
           UPDATE="no"
-          # Check if there are changes for version files, since the update
-          # directory is only updated on successful build
-          if [ -f "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR/pom.xml" ]
+          # Check if there are changes between the compiled and the updated
+          # directory, since the binary directory is only updated on success
+          # Spare the .git directory, because it only gives false positives
+          if [ $(diff -rx ".git" "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR/" "$BH_BINPATH/$PACKAGE/" | grep -cv "^Only in $BH_BINPATH/$PACKAGE") != "0" ]
             then
-              if ! diff "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR/pom.xml" "$BH_BINPATH/$PACKAGE/pom.xml" > /dev/null 2>&1
-                then
-                  UPDATE="yes"
-              fi
+              UPDATE="yes"
           fi
       fi
     else
