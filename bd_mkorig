@@ -19,7 +19,7 @@
 
 
 # ================================= Copyright =================================
-# Version 0.1 (2020-01-29), Copyright (C) 2019-2020
+# Version 0.1.1 (2020-09-29), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -86,6 +86,14 @@ bo_linecopy() {
     then
       lmba_logger "No source defined here: $1"
       return 1
+  # Work with wildcards; take the first to appear
+  elif echo "$SOURCE" | grep "*" > /dev/null 2>&1
+    then
+      if ! SOURCE=$(cd "$ORIGIN" && ls -1 $SOURCE | head -n 1)
+        then
+          lmba_logger "No proper source defined here: $1"
+          return 1
+      fi
   fi
   # Check empty target variable
   if [ "$TARGET" = "" ]

@@ -5,7 +5,7 @@
 
 
 # ================================= Copyright =================================
-# Version 0.2.6 (2020-09-11), Copyright (C) 2019-2020
+# Version 0.3.0 (2020-10-07), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -174,6 +174,8 @@ bh_git() {
   local ACTION="$1"
   local DIRECTORY="$2"
   local HERE="$PWD"
+  local OPTION="$3"
+  local PARAMETERS
   local RETURN
   local STATEMENT
   
@@ -191,7 +193,31 @@ bh_git() {
   case "$ACTION" in
     pull)
       STATEMENT="Already up to date."
-      ACTION="pull --recurse-submodules"
+      # Handle tags
+      if [ "$OPTION" = "tag" ]
+        then
+          # Point HEAD to origin default branch
+          RETURN=$(git checkout $(git remote show $(git remote -v show | grep push | grep -oE "\S+\.git") | grep "HEAD" | sed 's/.*: //'))
+          # Extract the original HEAD position as statement to check against
+          STATEMENT=$(echo "$RETURN" | grep "Previous HEAD position was" | cut -d " " -f 5 -s)
+      fi
+      # Pull the repo
+      RETURN=$(git pull --recurse-submodules 2>/dev/null)
+      # Check return code
+      if [ "$?" != "0" ]
+        then
+          lmba_logger "Git update was not possible. Please check!"
+          cd "$HERE"
+          return 1
+      fi
+      # Handle tags
+      if [ "$OPTION" = "tag" ]
+        then
+          # Jump to the most recent tag
+          RETURN=$(git checkout $(git describe --tags $(git rev-list --tags --max-count=1)))
+          # Extract the current HEAD position as RETURN
+          RETURN=$(echo "$RETURN" | grep "HEAD is now at" | cut -d " " -f 5 -s)
+      fi
       ;;
     push)
       STATEMENT="Everything up-to-date"
@@ -201,8 +227,18 @@ bh_git() {
           cd "$HERE"
           return 1
       fi
+      # Commit the stuff
       if ! git commit -m "Automatic commit from $HOSTNAME" >/dev/null 2>&1
         then
+          cd "$HERE"
+          return 1
+      fi
+      # Do the push
+      RETURN=$(git push 2>/dev/null)
+      # Check return code
+      if [ "$?" != "0" ]
+        then
+          lmba_logger "Git update was not possible. Please check!"
           cd "$HERE"
           return 1
       fi
@@ -213,14 +249,6 @@ bh_git() {
       return 1
       ;;
   esac
-  # Execute git command
-  RETURN=$(git $ACTION 2>/dev/null)
-  if [ "$?" != "0" ]
-    then
-      lmba_logger "Git update was not possible. Please check!"
-      cd "$HERE"
-      return 1
-  fi
   # Check for update
   if [ "$RETURN" = "$STATEMENT" ]
     then
@@ -287,23 +315,42 @@ bh_worker() {
   # Returns 0 on all ok
   # Returns 1 on any unrepairable failure
   
+  local GITOPT
+  local GITURL
   local HERE="$PWD"
   local ORGPKG
   local PACKAGE="$1"
   local UPDATE
   
   ### COMPILING ###
-  # Check if the package directory in BH_UPDTPATH is empty
+  # Split Git url and option, if available
+  if [ -f "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR/GITURL" ]
+    then
+      GITURL=$(cut -d " " -f 1 "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR/GITURL")
+      GITOPT=$(cut -d " " -f 2 -s "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR/GITURL")
+      # Check available options
+      case "$GITOPT" in
+        tag)
+          # Option is valid
+          lmba_logger "Using latest git tag for compiling.."
+          ;;
+        *)
+          # Ignore unhandled options
+          GITOPT=""
+          ;;
+      esac
+  fi
+  # Check if package needs to be initialized and do it, if necessary
   if [ "$(ls -1 "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR" | wc -l)" = "0" ]
     then
       # Content was not yet initialized for this package; do it now
-      if [ -f "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR/GITURL" ]
+      if [ "$GITURL" = "" ]
         then
-          # Clone git directory directly to BH_UPDTPATH of the package
-          git clone --recurse-submodules $(<"$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR/GITURL") "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR"
-        else
           # Copy files to create an inital set
           rsync -aq "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR/" "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR/" 2>/dev/null
+        else
+          # Clone git directory directly to BH_UPDTPATH of the package
+          git clone --recurse-submodules "$GITURL" "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR"
       fi
       # Get return code
       if [ "$?" = "0" ]
@@ -313,28 +360,17 @@ bh_worker() {
           lmba_logger "Initializing of git for package $PACKAGE failed - stopping here!"
           return 1
       fi
-  elif [ -f "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR/GITURL" ]
-    # GIT ONLY - Check if there was an update
+  fi
+  # Update check
+  if [ "$GITURL" = "" ]
     then
-      if [ "$(bh_git pull "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR")" = "CHANGE" ]
-        then
-          UPDATE="yes"
-        else
-          UPDATE="no"
-          # Check if there are changes between the compiled and the updated
-          # directory, since the binary directory is only updated on success
-          # Spare the .git directory, because it only gives false positives
-          if [ $(diff -rx ".git" "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR/" "$BH_BINPATH/$PACKAGE/" | grep -cv "^Only in $BH_BINPATH/$PACKAGE") != "0" ]
-            then
-              UPDATE="yes"
-          fi
-      fi
-    else
-      # Make out differences between the git source directory of that package and
-      # the former version saved in BH_UPDTPATH
+      # Non-git section
+      # Make out differences between the git source directory of that package
+      # and the former version saved in BH_UPDTPATH
       if diff -r "$BH_GITPATH/$PACKAGE/$BH_SRCPKGDIR" "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR" > /dev/null 2>&1
         then
-          UPDATE="no"
+          # Only set 'no' if variable is still empty
+          UPDATE="${UPDATE:-no}"
         else
           UPDATE="yes"
           # Update the update directory
@@ -343,6 +379,22 @@ bh_worker() {
               # Failure is grave, since the compiling script works from the
               # update directory
               lmba_logger "Could not copy the source to the local update directory!"
+          fi
+      fi
+    else
+      # Git section
+      if [ "$(bh_git pull "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR" "$GITOPT")" = "CHANGE" ]
+        then
+          UPDATE="yes"
+        else
+          # Only set 'no' if variable is still empty
+          UPDATE="${UPDATE:-no}"
+          # Check if there are changes between the compiled and the updated
+          # directory, since the binary directory is only updated on success
+          # Spare the .git directory, because it only gives false positives
+          if [ $(diff -rx ".git" "$BH_UPDTPATH/$PACKAGE/$BH_SRCPKGDIR/" "$BH_BINPATH/$PACKAGE/" | grep -cv "^Only in $BH_BINPATH/$PACKAGE") != "0" ]
+            then
+              UPDATE="yes"
           fi
       fi
   fi
