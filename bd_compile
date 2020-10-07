@@ -12,7 +12,7 @@
 
 
 # ================================= Copyright =================================
-# Version 0.1.4 (2020-10-07), Copyright (C) 2019-2020
+# Version 0.1.5 (2020-10-07), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -147,11 +147,11 @@ BC_STARTTIME=$(date +%s)
 # Choose compiler from config file and execute that
 case "$BC_COMPILER" in
   gradle)
-    timeout 600 -k 30 --preserve-status ./gradlew --console plain assemble > "$BC_COMPILELOG" 2>&1
+    timeout -k 30 --preserve-status 600 ./gradlew --console plain assemble > "$BC_COMPILELOG" 2>&1
     RETURN="$?"
     ;;
   maven)
-    timeout 600 -k 30 --preserve-status mvn -B clean install > "$BC_COMPILELOG" 2>&1
+    timeout -k 30 --preserve-status 600 mvn -B clean install > "$BC_COMPILELOG" 2>&1
     RETURN="$?"
     ;;
   NUL)
