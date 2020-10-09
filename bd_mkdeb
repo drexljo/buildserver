@@ -15,7 +15,7 @@
 # BH_VERSION
 
 # ================================= Copyright =================================
-# Version 0.1 (2020-01-30), Copyright (C) 2019-2020
+# Version 0.1.1 (2020-10-09), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -62,7 +62,7 @@ BD_DEBUILDLOG="/var/log/bd_helper/$BD_PACKAGE.debuildlog"
 if [ -f /usr/local/lib/libbash-mw/libbash-mw-basic ]
   then
     . /usr/local/lib/libbash-mw/libbash-mw-basic
-    lmba_logger "Start of bd_mkdeb"
+    lmba_logger "Start of bd_mkdeb for $BD_PACKAGE"
   else
     echo "Library libbash-mw-basic missing!"
     exit 2

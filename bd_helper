@@ -5,7 +5,7 @@
 
 
 # ================================= Copyright =================================
-# Version 0.3.0 (2020-10-07), Copyright (C) 2019-2020
+# Version 0.3.1 (2020-10-09), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -228,10 +228,16 @@ bh_git() {
           return 1
       fi
       # Commit the stuff
-      if ! git commit -m "Automatic commit from $HOSTNAME" >/dev/null 2>&1
+      if ! RETURN=$(git commit -m "Automatic commit from $HOSTNAME" 2>/dev/null)
         then
           cd "$HERE"
-          return 1
+          # Check if nothing is to commit
+          if echo "$RETURN" | grep "nothing to commit" > /dev/null
+            then
+              return 0
+            else
+              return 1
+          fi
       fi
       # Do the push
       RETURN=$(git push 2>/dev/null)
