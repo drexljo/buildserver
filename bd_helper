@@ -5,7 +5,7 @@
 
 
 # ================================= Copyright =================================
-# Version 0.3.1 (2020-10-09), Copyright (C) 2019-2020
+# Version 0.3.2 (2020-10-23), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -688,6 +688,12 @@ rm -rf "$BH_TEMPPATH"
 if ! lmba_pidfile delete
   then
     exit 1
+fi
+
+# Clear the temp directory, since most compilers leave a mess
+if [ "$(whoami)" != "" ]
+  then
+    find /tmp/ -user "$(whoami)" -mtime +1 -delete >/dev/null 2>&1
 fi
 
 # This movie is over
