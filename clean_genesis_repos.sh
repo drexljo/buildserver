@@ -1,0 +1,390 @@
+#!/bin/bash
+
+# clean_genesis_repos.sh
+# Deletes all old binary packages; i. e. only leaves the newest versions and
+# their respective debian build packages on the server. Use with care!
+
+# ================================= Copyright =================================
+# Version 0.1 (2020-11-02), Copyright (C) 2020
+# Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
+# Coauthors: -
+
+#   This program is free software: you can redistribute it and/or modify it 
+#   under the terms of the GNU General Public License as published by the 
+#   Free Software Foundation, either version 3 of the License, or any later 
+#   version.
+#   This Program is distributed in the hope that it will be useful, but 
+#   WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY 
+#   or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License 
+#   for more details.
+
+#   You should have received a copy of the GNU General Public License
+#   along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+#   On Debian systems, the full text of the GNU General Public License
+#   version 3 can be found in the file 
+#     `/usr/share/common-licenses/GPL-3'
+
+
+# ================================= Variables =================================
+
+# Genesis build user
+CG_BUILDUSER="bob"
+
+# Directory of the git
+CG_GITDIR="/srv/bob_the_builder/gitlab"
+
+# Directory of packages
+CG_PACKAGE_DIR="/srv/bob_the_builder/packages"
+
+# Name of the repository configuration file
+CG_REPOSFILE="mkrepo.conf"
+
+# Name of the file where the package repositories are configured
+CG_PKGREPOFILE="repos.conf"
+
+
+# ================================= Functions =================================
+
+# Clean the aptly repository
+cg_aptlyclean() {
+  # Expects the repository as parameter 1 and the list of all packages to drop 
+  # as parameter 2
+  # Returns 0 on OK
+  # Returns 1 on failure
+  
+  # Local variables
+  local FILE
+  local PKGLIST="$2"
+  local REPOSITORY="$1"
+  
+  # Check parameters
+  if [ "$REPOSITORY" = "" ]
+    then
+      echo "No repository given, can't continue."
+      return 1
+  fi
+  
+  # Work the list
+  while read -u 7 FILE
+    do
+      # Skip empty lines
+      if [ "$FILE" = "" ]
+        then
+          continue
+      fi
+      
+      if ! sudo -u "$CG_BUILDUSER" aptly repo remove "$REPOSITORY" "$FILE" > /dev/null
+        then
+          echo "Could not remove '$FILE' from repo '$REPOSITORY'! Stopping here!"
+          return 1
+      fi
+    done 7<<<$(echo -e "$PKGLIST")
+  
+  # Jump back
+  return 0
+}
+
+# Check if all files and directories expected are available
+cg_check() {
+  # Expects the type (f/d) as parameter 1, the name/path as parameter 2 and
+  # optionally "c" as parameter 3, if nonexistence is deemed critical to the
+  # whole script
+  # Returns 0 on all ok
+  # Returns 1 on non-critical nonexistence or invocation error
+  # Exits with 1 on critical nonexistence
+
+  # Local variables
+  local CRITICAL="$3"
+  local OBJECT="$2"
+  local TYPE="$1"
+  local TYPEDESC
+  
+  # Check type
+  case "$TYPE" in 
+    d)
+      TYPEDESC="directory"
+      ;;
+    f)
+      TYPEDESC="file"
+      ;;
+    *)
+      return 1
+  esac
+  
+  # Check the object
+  if [ "$OBJECT" != "" -a -$TYPE "$OBJECT" ]
+    then
+      return 0
+  elif [ "$CRITICAL" = "c" ]
+    then
+      echo "No such $TYPEDESC: '$OBJECT'!"
+      exit 1
+    else
+      return 1
+  fi
+}
+
+# Clean the aptly repository
+cg_dirclean() {
+  # Expects the directory as parameter 1 and the list of all packages to drop 
+  # as parameter 2
+  # Returns 0 on OK
+  # Returns 1 on failure
+  
+  # Local variables
+  local DIRECTORY="$1"
+  local FILE
+  local FILELIST="$2"
+  
+  # Check parameters
+  if ! cg_check d "$DIRECTORY"
+    then
+      echo "No directory given, can't continue."
+      return 1
+  fi
+  
+  # Work the list
+  while read -u 7 FILE
+    do
+      # Skip empty lines
+      if [ "$FILE" = "" ]
+        then
+          continue
+      fi
+      
+      # Delete file
+      if rm -f "$DIRECTORY/$FILE" > /dev/null
+        then
+          echo "Could not remove '$FILE' from directory '$DIRECTORY'!"
+      fi
+    done 7<<<$(echo -e "$PKGLIST")
+  
+  # Jump back
+  return 0
+}
+
+# Returns the latest successful packaged version in the directory
+# The format will be 'name_version' without Debian specific package version
+# number, e. g. test_1.0.0
+cg_findlatest() {
+  # Expects the directory as parameter 1
+  # Echoes the latest package (without Debian specifics) on successful return
+  # Returns 0 on OK
+  # Returns 1 on failure
+  
+  # Local variables
+  local DIRECTORY="$1"
+  local LASTDEB
+  local LATEST
+  
+  # Check directory
+  if ! cg_check "$DIRECTORY"
+    then
+      echo "No such directory '$DIRECTORY'; skipping."
+      return 1
+  fi
+  
+  # Find the latest debian package
+  if ! LASTDEB=$(ls -1 "$DIRECTORY" | grep -E ".deb$" | sort -V | tail -n 1)
+    then
+      echo "No latest Debian package found in '$DIRECTORY'. Skipping..."
+      return 1
+  fi
+  
+  # Cut away all debian specifics
+  if ! LATEST=$(echo "$LASTDEB" | grep -oE "[-a-zA-Z0-9]+_[\.0-9]+")
+    then
+      echo "Could not extract latest version from '$LASTDEB'"
+      return 1
+  fi
+  
+  # Echo and return
+  echo "$LATEST"
+  return 0  
+}
+
+# Walks the package directory
+cg_walkpkgdir() {
+  # Uses CG_GITDIR too to find legacy packages
+  # Returns 0 on OK
+  # Returns 1 on failure
+  
+  # Local variables
+  local DEBFILES
+  local DIRECTORY
+  local FILES
+  local KILLIT
+  local LATEST
+  local REPO
+  local REPOS
+  
+  # Walk the directory
+  while read -u 5 DIRECTORY
+    do
+      # Reset variables
+      DEBFILES=""
+      FILES=""
+      KILLIT="no"
+      LATEST=""
+      REPO=""
+      REPOS=""
+      
+      # Check for empty lines
+      if [ "$DIRECTORY" = "" ]
+        then
+          continue
+      fi
+      
+      # Check if there's a corresponding git directory
+      if [ ! -d "$CG_GITDIR/$DIRECTORY" ]
+        then
+          # Ask the user what to do
+          if whiptail --title "Clean Genesis Repos" --defaultno \
+            --yesno "$DIRECTORY has no buildserver job - try to wipe it from disk and repos?" 8 78
+            then
+              KILLIT="yes"
+            else
+              echo "Skipping '$DIRECTORY'..."
+              continue
+          fi
+      fi
+      
+      # Check and read out the repositories configured
+      if [ "$KILLIT" = "yes" ]
+        then
+          # Read the repos from the global repo config file
+          REPOS=$(cut -d " " -f 1 -s "$CG_GITDIR/$CG_REPOSFILE")
+        else
+          if cg_check f "$CG_GITDIR/$DIRECTORY/$CG_PKGREPOFILE"
+            then
+              REPOS=$(<"$CG_GITDIR/$DIRECTORY/$CG_PKGREPOFILE")
+            else
+              echo "Can't find repository file for '$DIRECTORY', skipping..."
+              continue
+          fi
+      fi
+      
+      # Read all files
+      FILES=$(ls -1 "$CG_PACKAGE_DIR/$DIRECTORY")
+      # Weed out the latest packages
+      if [ "$KILLIT" != "yes" ]
+        then
+          LATEST=$(cg_findlatest "$CG_PACKAGE_DIR/$DIRECTORY")
+          FILES=$(echo "$FILES" | grep -v "$LATEST")
+          # Create DEBFILES for the aptly job
+          DEBFILES=$(echo "$FILES" | grep ".deb")
+        else
+          # This is a wildcard for all packages of that name
+          DEBFILES="${DIRECTORY}_"
+      fi
+      
+      # Clean up directories
+      if [ "$KILLIT" = "yes" ]
+        then
+          rm -rf "$CG_PACKAGE_DIR/$DIRECTORY"
+        else
+          cg_dirclean "$CG_PACKAGE_DIR/$DIRECTORY" "$FILES"
+      fi
+      # Clean up repositories
+      
+      
+    done 5<<<$(ls -1 $CG_PACKAGE_DIR)
+  
+  # Return
+  return 0
+}
+
+# Work aptly jobs (except cleanup and single package removal)
+cg_workaptly() {
+  # Expects the repository list as parameter 1, the job as parameter 2 and for
+  # remove the list of packages to remove as parameter 3
+  # Returns 0 on OK
+  # Returns 1 on failure
+  
+  # Local variables
+  local JOB="$2"
+  local PASSFILE
+  local PKGLIST="$3"
+  local REPOLIST="$1"
+  local REPOSITORY
+  local USERHOME=$(getent passwd "$CG_BUILDUSER" | cut -d ":" -f 6 -s)
+  
+  # Check parameters
+  if [ "$REPOLIST" = "" ]
+    then
+      echo "No repository list given, can't continue."
+      return 1
+  fi
+  
+  # Work the list
+  while read -u 6 REPOSITORY
+    do
+      # Skip empty lines
+      if [ "$REPOSITORY" = "" ]
+        then
+          continue
+      fi
+      
+      # Handle the job
+      case "$JOB" in
+        remove)
+          cg_aptlyclean "$REPOSITORY" "$PKGLIST"
+          ;;
+        update)
+          PASSFILE=$(grep "$REPOSITORY" "$CG_GITDIR/$CG_REPOSFILE" | cut -d " " -f 2 -s)
+          sudo -u "$CG_BUILDUSER" aptly publish update --batch --passphrase-file="$USERHOME/$PASSFILE" "$REPOSITORY" 2>&1
+          ;;
+        *)
+          echo "No proper job given, can't continue!"
+          return 1
+          ;;
+      esac
+    done 6<<<$("$REPOLIST")
+  
+  # Jump back
+  return 0
+}
+
+
+# =============================== Prerequisites ===============================
+
+# We're setting the path variable anew because some systems have that wrong
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Check if being root
+if [ "$(whoami)" != "root" ]
+  then
+    echo "Must be invocated as root!"
+    exit 1
+fi
+
+# CHeck user
+if ! getent passwd "$CG_BUILDUSER" > /dev/null
+  then
+    echo "Build user '$CG_BUILDUSER' not known to the system!"
+    exit 1
+fi
+
+# Check files and directories
+cg_check d "$CG_GITDIR" c
+cg_check d "$CG_PACKAGE_DIR" c
+cg_check f "$CG_GITDIR/$CG_REPOSFILE" c
+
+# Get all packages that are known by the system
+CG_PACKAGES=$(ls -1 "$CG_PACKAGE_DIR")
+
+
+# =================================== Main ====================================
+
+# Walk the directory
+if cg_walkpkgdir
+  then
+    # Clean up the aptly database and package tree
+    sudo -u bob aptly db cleanup
+    # Update all repos
+    cg_workaptly "$(cut -d " " -f 1 "$CG_GITDIR/$CG_REPOSFILE")" update
+fi
+
+# This movie is over
+exit $?
