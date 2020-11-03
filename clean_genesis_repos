@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# clean_genesis_repos.sh
+# clean_genesis_repos
 # Deletes all old binary packages; i. e. only leaves the newest versions and
 # their respective debian build packages on the server. Use with care!
 
 # ================================= Copyright =================================
-# Version 0.1 (2020-11-02), Copyright (C) 2020
+# Version 0.1.1 (2020-11-03), Copyright (C) 2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -54,7 +54,7 @@ cg_aptlyclean() {
   # Returns 1 on failure
   
   # Local variables
-  local FILE
+  local PACKAGE
   local PKGLIST="$2"
   local REPOSITORY="$1"
   
@@ -66,7 +66,7 @@ cg_aptlyclean() {
   fi
   
   # Work the list
-  while read -u 7 FILE
+  while read -u 7 PACKAGE
     do
       # Skip empty lines
       if [ "$FILE" = "" ]
@@ -74,11 +74,14 @@ cg_aptlyclean() {
           continue
       fi
       
-      if ! sudo -u "$CG_BUILDUSER" aptly repo remove "$REPOSITORY" "$FILE" > /dev/null
+      if sudo -u "$CG_BUILDUSER" aptly repo remove "$REPOSITORY" "$PACKAGE" > /dev/null
         then
-          echo "Could not remove '$FILE' from repo '$REPOSITORY'! Stopping here!"
-          return 1
+          CG_COUNTAPTLY=$(( $CG_COUNTAPTLY + 1 ))
+        else
+          echo "Could not remove '$PACKAGE' from repo '$REPOSITORY'!"
+          continue
       fi
+      
     done 7<<<$(echo -e "$PKGLIST")
   
   # Jump back
@@ -156,9 +159,11 @@ cg_dirclean() {
       # Delete file
       if rm -f "$DIRECTORY/$FILE" > /dev/null
         then
+          CG_COUNTRM=$(( $CG_COUNTRM + 1 ))
+        else
           echo "Could not remove '$FILE' from directory '$DIRECTORY'!"
       fi
-    done 7<<<$(echo -e "$PKGLIST")
+    done 7<<<$(echo -e "$FILELIST")
   
   # Jump back
   return 0
@@ -179,23 +184,24 @@ cg_findlatest() {
   local LATEST
   
   # Check directory
-  if ! cg_check "$DIRECTORY"
+  if ! cg_check d "$DIRECTORY"
     then
-      echo "No such directory '$DIRECTORY'; skipping."
+      echo "No such directory '$DIRECTORY'; skipping." >&2
       return 1
   fi
   
   # Find the latest debian package
-  if ! LASTDEB=$(ls -1 "$DIRECTORY" | grep -E ".deb$" | sort -V | tail -n 1)
+  LASTDEB=$(ls -1 "$DIRECTORY" | grep -E ".deb$" | sort -V | tail -n 1)
+  if [ "$LASTDEB" = "" ]
     then
-      echo "No latest Debian package found in '$DIRECTORY'. Skipping..."
+      echo "No latest Debian package found in '$DIRECTORY'. Skipping..." >&2
       return 1
   fi
   
   # Cut away all debian specifics
   if ! LATEST=$(echo "$LASTDEB" | grep -oE "[-a-zA-Z0-9]+_[\.0-9]+")
     then
-      echo "Could not extract latest version from '$LASTDEB'"
+      echo "Could not extract latest version from '$LASTDEB'" >&2
       return 1
   fi
   
@@ -211,23 +217,21 @@ cg_walkpkgdir() {
   # Returns 1 on failure
   
   # Local variables
-  local DEBFILES
   local DIRECTORY
   local FILES
   local KILLIT
   local LATEST
-  local REPO
+  local PACKAGES
   local REPOS
   
   # Walk the directory
   while read -u 5 DIRECTORY
     do
       # Reset variables
-      DEBFILES=""
       FILES=""
       KILLIT="no"
       LATEST=""
-      REPO=""
+      PACKAGES=""
       REPOS=""
       
       # Check for empty lines
@@ -268,15 +272,19 @@ cg_walkpkgdir() {
       # Read all files
       FILES=$(ls -1 "$CG_PACKAGE_DIR/$DIRECTORY")
       # Weed out the latest packages
-      if [ "$KILLIT" != "yes" ]
+      if [ "$KILLIT" = "yes" ]
         then
-          LATEST=$(cg_findlatest "$CG_PACKAGE_DIR/$DIRECTORY")
-          FILES=$(echo "$FILES" | grep -v "$LATEST")
-          # Create DEBFILES for the aptly job
-          DEBFILES=$(echo "$FILES" | grep ".deb")
+          # No package of that name, so nothing will be preserved
+          LATEST="${DIRECTORY}_0.0.0"
         else
-          # This is a wildcard for all packages of that name
-          DEBFILES="${DIRECTORY}_"
+         if ! LATEST=$(cg_findlatest "$CG_PACKAGE_DIR/$DIRECTORY")
+            then
+              echo "'$DIRECTORY' was never successfully build into a debian package. Skipping..."
+              continue
+          fi
+          # Create filelist for the directories cleanup
+          FILES=$(echo "$FILES" | grep -v "$LATEST")
+          echo "Preserving latest: $LATEST"
       fi
       
       # Clean up directories
@@ -287,9 +295,9 @@ cg_walkpkgdir() {
           cg_dirclean "$CG_PACKAGE_DIR/$DIRECTORY" "$FILES"
       fi
       # Clean up repositories
+      cg_workaptly "$REPOS" clean "$LATEST"
       
-      
-    done 5<<<$(ls -1 $CG_PACKAGE_DIR)
+    done 5<<<$(ls -1 "$CG_PACKAGE_DIR")
   
   # Return
   return 0
@@ -298,14 +306,15 @@ cg_walkpkgdir() {
 # Work aptly jobs (except cleanup and single package removal)
 cg_workaptly() {
   # Expects the repository list as parameter 1, the job as parameter 2 and for
-  # remove the list of packages to remove as parameter 3
+  # clean the package to preserve as parameter 3
   # Returns 0 on OK
   # Returns 1 on failure
   
   # Local variables
   local JOB="$2"
   local PASSFILE
-  local PKGLIST="$3"
+  local PKGLIST
+  local PRESERVE="$3"
   local REPOLIST="$1"
   local REPOSITORY
   local USERHOME=$(getent passwd "$CG_BUILDUSER" | cut -d ":" -f 6 -s)
@@ -320,15 +329,17 @@ cg_workaptly() {
   # Work the list
   while read -u 6 REPOSITORY
     do
-      # Skip empty lines
-      if [ "$REPOSITORY" = "" ]
+      # Skip empty lines/comments
+      if echo "$REPOSITORY" | grep -E "^(\s+)?(#.*)?$" > /dev/null
         then
           continue
       fi
       
       # Handle the job
       case "$JOB" in
-        remove)
+        clean)
+          # Create the package list
+          PKGLIST=$(sudo -u "$CG_BUILDUSER" aptly repo show -with-packages $REPOSITORY | grep "$(echo "$PRESERVE" | cut -d "_" -f 1)_" | grep -v "$PRESERVE")
           cg_aptlyclean "$REPOSITORY" "$PKGLIST"
           ;;
         update)
@@ -340,7 +351,7 @@ cg_workaptly() {
           return 1
           ;;
       esac
-    done 6<<<$("$REPOLIST")
+    done 6<<<$(echo -e "$REPOLIST")
   
   # Jump back
   return 0
@@ -374,17 +385,24 @@ cg_check f "$CG_GITDIR/$CG_REPOSFILE" c
 # Get all packages that are known by the system
 CG_PACKAGES=$(ls -1 "$CG_PACKAGE_DIR")
 
+# Add counting variables
+CG_COUNTAPTLY="0"
+CG_COUNTRM="0"
+
 
 # =================================== Main ====================================
 
 # Walk the directory
 if cg_walkpkgdir
   then
-    # Clean up the aptly database and package tree
-    sudo -u bob aptly db cleanup
     # Update all repos
     cg_workaptly "$(cut -d " " -f 1 "$CG_GITDIR/$CG_REPOSFILE")" update
+    # Clean up the aptly database and package tree
+    sudo -u bob aptly db cleanup
 fi
 
+# Report
+echo "Removed $CG_COUNTRM package files from disk and $CG_COUNTAPTLY packages from aptly."
+
 # This movie is over
-exit $?
+exit 0
