@@ -5,7 +5,7 @@
 # their respective debian build packages on the server. Use with care!
 
 # ================================= Copyright =================================
-# Version 0.1.1 (2020-11-03), Copyright (C) 2020
+# Version 0.1.2 (2020-11-17), Copyright (C) 2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -69,7 +69,7 @@ cg_aptlyclean() {
   while read -u 7 PACKAGE
     do
       # Skip empty lines
-      if [ "$FILE" = "" ]
+      if [ "$PACKAGE" = "" ]
         then
           continue
       fi
