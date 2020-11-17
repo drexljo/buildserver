@@ -5,7 +5,7 @@
 
 
 # ================================= Copyright =================================
-# Version 0.3.2 (2020-10-23), Copyright (C) 2019-2020
+# Version 0.3.3 (2020-11-12), Copyright (C) 2019-2020
 # Author: Jo Drexl (johannes.drexl@lrz.de) for Leibniz Supercomputing Centre
 # Coauthors: -
 
@@ -325,6 +325,7 @@ bh_worker() {
   local GITURL
   local HERE="$PWD"
   local ORGPKG
+  local ORGPKG_FALLBACK
   local PACKAGE="$1"
   local UPDATE
   
@@ -409,8 +410,8 @@ bh_worker() {
     then
       if ! $BH_COMPILER "$PACKAGE"
         then
-          lmba_logger "Compiling subscript returned an error compiling package $PACKAGE - stopping here!"
-          return 1
+          lmba_logger "Compiling subscript returned an error compiling package $PACKAGE - using last successful build, if there was any!"
+          UPDATE="no"
       fi
   fi
   
@@ -432,7 +433,7 @@ bh_worker() {
     then
       # Check if there is already an original package which could be used
       # instead of a newly build one if necessary (fallback)
-      ORGPKG=$(ls -1 $BH_FINPATH/$PACKAGE/ | grep -v ".orig.tar.gz.old" | grep ".orig.tar.gz" | tail -n 1)
+      ORGPKG_FALLBACK=$(ls -1 $BH_FINPATH/$PACKAGE/ | grep -v ".orig.tar.gz.old" | grep ".orig.tar.gz" | tail -n 1)
       # Look if there's a difference between the update directory and the git
       # one to determine if there was an update
       if ! diff -r "$BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR" "$BH_UPDTPATH/$PACKAGE/$BH_ORGPKGDIR" > /dev/null 2>&1
@@ -440,11 +441,13 @@ bh_worker() {
           UPDATE="yes"
       # Check again if the fallback is really a file; if not we have to build
       # a package
-      elif [ "$ORGPKG" != "" -a -f "$BH_FINPATH/$PACKAGE/$ORGPKG" ]
+      elif [ "$ORGPKG_FALLBACK" != "" -a -f "$BH_FINPATH/$PACKAGE/$ORGPKG_FALLBACK" ]
         then
           UPDATE="no"
         else
           UPDATE="yes"
+          # Empty the variable, so further down can detect there's no fallback'
+          ORGPKG_FALLBACK=""
       fi
   fi
   # Only build a new package, if it's necessary
@@ -458,15 +461,15 @@ bh_worker() {
           # Execute it; bail out if exit code is not zero
           if ! BH_DEVNULL=$(cd $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR && $BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/$BH_MODIFY $PACKAGE)
             then
-              lmba_logger "$BH_MODIFY returned an error - can't continue with $PACKAGE!"
-              return 1
+              lmba_logger "$BH_MODIFY returned an error with $PACKAGE!"
           fi
       fi
       # Execute original packaging subscript
       if ! ORGPKG=$($BH_MKORIG "$PACKAGE")
         then
-          lmba_logger "Packaging subscript returned an error with $PACKAGE - stopping here!"
-          return 1
+          lmba_logger "Packaging subscript returned an error with $PACKAGE!"
+          # Indicate to use fallback
+          ORGPKG=""
       fi
       # Update the update directory
       if ! rsync -auq --delete "$BH_GITPATH/$PACKAGE/$BH_ORGPKGDIR/" "$BH_UPDTPATH/$PACKAGE/$BH_ORGPKGDIR/" 2>/dev/null
@@ -475,6 +478,19 @@ bh_worker() {
           # every time the script is running, which may lead to wasting of
           # ressources
           lmba_logger "Could not copy the original integration files to the local update directory!"
+      fi
+  fi
+  # Falling back if necessary
+  if [ "$ORGPKG" = "" ]
+    then
+      # Check if fallback is possible
+      if [ "$ORGPKG_FALLBACK" != "" ]
+        then
+          ORGPKG="$ORGPKG_FALLBACK"
+        else
+          # We can't continue
+          lmba_logger "Using old original package for '$PACKAGE' not possible - stopping here!"
+          return 1
       fi
   fi
   
